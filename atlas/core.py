@@ -1,7 +1,9 @@
-"""贴图图集打包：把一批矩形贴图排进固定宽度的图集，记录位置、朝向与溢出。
+"""贴图图集打包：把一批矩形贴图按行排进固定宽度的图集。
 
-缺陷：不排序、行高只记最后一项、忽略边距、超宽不拒绝、覆盖率按行高算错、
-每次放置都遍历已放贴图做重叠检查。
+口径见 README：按 (-max(w, h), -w*h, name) 排序；四周留 padding；
+行高取行内最大高度；允许时可旋转 90 度；两种朝向都放不下的计入
+rejected；高度为最后一行 y + 行高 + padding；单遍放置，不做逐张
+重叠遍历。
 """
 
 
@@ -15,36 +17,62 @@ class Packer:
         self.overlap_checks = 0
 
     def pack(self, items):
+        self.overlap_checks = 0
         placed = []
         rejected = 0
-        x = 0
-        y = 0
+        pad = self.padding
+        width = self.width
+        x = pad
+        y = pad
         row_h = 0
-        for name, w, h in items:
-            self.overlap_checks += len(placed)
-            rotated = False
-            if self.allow_rotate and w > h and x + h > self.width:
-                w, h = h, w
-                rotated = True
-            if x + w > self.width:
-                y += row_h
-                x = 0
+
+        ordered = sorted(items, key=lambda it: (-max(it[1], it[2]), -it[1] * it[2], it[0]))
+
+        for name, w, h in ordered:
+            orientations = [(w, h, False)]
+            if self.allow_rotate and w != h:
+                orientations.append((h, w, True))
+
+            choice = None
+            for ow, oh, rot in orientations:
+                self.overlap_checks += 1
+                if x + ow + pad <= width:
+                    choice = (ow, oh, rot)
+                    break
+            if choice is None:
+                if x == pad:
+                    # 空行都放不下：两种朝向均被拒绝
+                    rejected += 1
+                    continue
+                y += row_h + pad
+                x = pad
                 row_h = 0
+                for ow, oh, rot in orientations:
+                    self.overlap_checks += 1
+                    if x + ow + pad <= width:
+                        choice = (ow, oh, rot)
+                        break
+            if choice is None:
+                rejected += 1
+                continue
+
+            ow, oh, rot = choice
             placed.append({
                 "name": name,
                 "x": x,
                 "y": y,
-                "w": w,
-                "h": h,
-                "rotated": rotated,
+                "w": ow,
+                "h": oh,
+                "rotated": rot,
             })
-            x += w
-            row_h = h
-        height = y + row_h
+            x += ow + pad
+            row_h = max(row_h, oh)
+
+        height = y + row_h + pad if placed else 0
         area = sum(p["w"] * p["h"] for p in placed)
-        coverage = 0.0 if height == 0 else area * 100.0 / (self.width * height)
+        coverage = 0.0 if height == 0 else area * 100.0 / (width * height)
         return {
-            "width": self.width,
+            "width": width,
             "height": height,
             "placed": placed,
             "rejected": rejected,

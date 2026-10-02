@@ -1,12 +1,15 @@
 """贴图图集打包：把一批矩形贴图排进固定宽度的图集，记录位置、朝向与溢出。
 
-缺陷：不排序、行高只记最后一项、忽略边距、超宽不拒绝、覆盖率按行高算错、
-每次放置都遍历已放贴图做重叠检查。
+口径（与 README 一致）：按 (-max(w, h), -w*h, name) 升序做架式单遍排布；
+每张贴图四周留 padding，首图左上角为 (padding, padding)；行高取该行最大
+高度，下一行 y = 上一行 y + 行高 + padding；允许旋转时可转 90 度并交换
+宽高、标记 rotated；两种朝向都放不下的计入 rejected，不占坐标；高度等于
+最后一行 y + 行高 + padding，coverage 为已放面积除以 width * height。
 """
 
 
 class Packer:
-    """按固定宽度排布贴图。"""
+    """按固定宽度排布贴图（架式排布，每张贴图 O(1) 放置）。"""
 
     def __init__(self, width, padding=1, allow_rotate=True):
         self.width = width
@@ -14,22 +17,38 @@ class Packer:
         self.allow_rotate = allow_rotate
         self.overlap_checks = 0
 
+    def _fits_width(self, side):
+        return side + 2 * self.padding <= self.width
+
     def pack(self, items):
+        ordered = sorted(items, key=lambda item: (-max(item[1], item[2]),
+                                                  -(item[1] * item[2]),
+                                                  item[0]))
         placed = []
         rejected = 0
-        x = 0
-        y = 0
+        pad = self.padding
+        x = pad
+        y = pad
         row_h = 0
-        for name, w, h in items:
-            self.overlap_checks += len(placed)
+        for name, w, h in ordered:
+            if not self._fits_width(w) \
+                    and not (self.allow_rotate and self._fits_width(h)):
+                rejected += 1
+                continue
+            self.overlap_checks += 1
             rotated = False
-            if self.allow_rotate and w > h and x + h > self.width:
-                w, h = h, w
-                rotated = True
-            if x + w > self.width:
-                y += row_h
-                x = 0
-                row_h = 0
+            if x + w + pad > self.width:
+                if self.allow_rotate and w != h \
+                        and x + h + pad <= self.width:
+                    w, h = h, w
+                    rotated = True
+                else:
+                    y += row_h + pad
+                    x = pad
+                    row_h = 0
+                    if not self._fits_width(w):
+                        w, h = h, w
+                        rotated = True
             placed.append({
                 "name": name,
                 "x": x,
@@ -38,9 +57,10 @@ class Packer:
                 "h": h,
                 "rotated": rotated,
             })
-            x += w
-            row_h = h
-        height = y + row_h
+            x += w + pad
+            if h > row_h:
+                row_h = h
+        height = 0 if not placed else y + row_h + pad
         area = sum(p["w"] * p["h"] for p in placed)
         coverage = 0.0 if height == 0 else area * 100.0 / (self.width * height)
         return {
